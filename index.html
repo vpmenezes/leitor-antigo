@@ -1653,7 +1653,18 @@ async function takeShared() {
 }
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // quando sai uma versão nova do app, ela assume e a tela recarrega uma vez sozinha
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded) return;
+    reloaded = true;
+    flushSave();
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+    .then(reg => reg.update())
+    .catch(() => {});
 }
 </script>
 </body>

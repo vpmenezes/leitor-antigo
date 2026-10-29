@@ -1,6 +1,6 @@
 // Guarda o app no celular para abrir mesmo sem internet.
 // Ao publicar uma versão nova, troque o número em VERSION.
-const VERSION = 'leitor-v3';
+const VERSION = 'leitor-v4';
 const SHARED = 'leitor-compartilhados';
 const APP = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './lib/epub.min.js', './lib/jszip.min.js'];
 
@@ -45,7 +45,8 @@ self.addEventListener('fetch', e => {
   // páginas do app: tenta a internet primeiro (para pegar atualizações), senão usa a cópia guardada
   if (req.mode === 'navigate') {
     e.respondWith(
-      fetch(req).then(res => {
+      // no-cache: confere sempre com o site, sem usar a cópia velha do navegador
+      fetch(req, { cache: 'no-cache' }).then(res => {
         const copy = res.clone();
         caches.open(VERSION).then(c => c.put('./index.html', copy));
         return res;
