@@ -455,6 +455,14 @@ html[data-flip="next"]::view-transition-old(pg) { z-index: 1; }
 }
 .hl-pop .nb-act { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 .hl-pop .tb.strong { background: #6a4426; color: #fff3dc; }
+.hl-pop .r1 { flex-wrap: wrap; justify-content: center; }
+.hl-pop .tb[hidden] { display: none; }
+.dict-src { color: var(--ink-soft); font-size: 14px; font-style: italic; margin-bottom: 4px; }
+.dict .def { margin: 14px 0; }
+.dict .def .tag { font-style: italic; color: var(--ink-soft); font-size: 15px; }
+.dict .def ol { margin: 4px 0 0; padding-left: 22px; }
+.dict .def li { font-size: 17px; line-height: 1.5; margin: 4px 0; }
+.dict-link { display: inline-block; margin-top: 8px; color: #6b3a12; font-size: 15px; }
 
 .drop {
   position: fixed; inset: 0; z-index: 40;
@@ -637,6 +645,7 @@ html, body { height: 100dvh; }
     <span class="sep"></span>
     <button class="tb" id="hlNote">Nota</button>
     <button class="tb" id="hlCopy">Copiar</button>
+    <button class="tb" id="hlDict">Dicionário</button>
     <button class="tb del" id="hlDel">Apagar</button>
   </div>
   <div class="nb">
@@ -1489,6 +1498,7 @@ function placePop(r, iframe, isEdit) {
   const pop = $('hlPop');
   pop.classList.remove('noting');
   pop.classList.toggle('edit', isEdit);
+  $('hlDict').hidden = !dictWord();
   pop.querySelectorAll('.sw').forEach(b => b.classList.toggle('cur', !!popMark && popMark.color === b.dataset.c));
   // no celular o menu do sistema (Copiar, Compartilhar) aparece em cima da seleção,
   // então o balão vai embaixo, a não ser que não caiba
@@ -1589,6 +1599,99 @@ function renderReaderMarks() {
   marks.forEach(m => box.appendChild(markItem(m,
     () => { displayBoth(m.cfi); toggleToc(false); },
     () => deleteMark(m))));
+}
+
+/* ================= DICIONÁRIO ================= */
+// palavra selecionada (só quando é uma palavra), sem pontuação em volta
+function dictWord() {
+  const t = popMark ? popMark.text : (pendingSel && pendingSel.text);
+  if (!t) return null;
+  const w = t.trim().replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
+  return /^[\p{L}'’-]{2,}$/u.test(w) ? w : null;
+}
+
+// Dicionário Aberto: dicionário de 1913, bom para a grafia antiga dos livros
+async function fromAberto(w) {
+  const res = await fetch('https://api.dicionario-aberto.net/word/' + encodeURIComponent(w));
+  if (!res.ok) return [];
+  const out = [];
+  for (const entry of await res.json()) {
+    const xml = new DOMParser().parseFromString(entry.xml || '', 'text/xml');
+    xml.querySelectorAll('sense').forEach(sn => {
+      const tag = [...sn.querySelectorAll('gramGrp, usg')].map(n => n.textContent.trim()).filter(Boolean).join(' · ');
+      const def = sn.querySelector('def');
+      const defs = def ? def.textContent.split('\n').map(l => l.replace(/_([^_]+)_/g, '$1').trim()).filter(Boolean) : [];
+      if (defs.length) out.push({ tag, defs });
+    });
+  }
+  return out;
+}
+
+// Wikcionário: entende verbos conjugados e palavras mais novas
+async function fromWiktionary(w) {
+  const url = 'https://pt.wiktionary.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&format=json&origin=*&titles=' + encodeURIComponent(w);
+  const data = await (await fetch(url)).json();
+  const page = Object.values((data.query && data.query.pages) || {})[0];
+  let text = (page && page.extract) || '';
+  const start = text.indexOf('= Português =');
+  if (start < 0) return [];
+  text = text.slice(start + 13);
+  const next = text.search(/\n= [^=]/);
+  if (next >= 0) text = text.slice(0, next);
+  const skip = /tradu|ver também|anagrama|pronúncia|referência|etimologia|ligações|sinônimo|antônimo|formas alternativas|divisão|expressões|fontes/i;
+  const out = [];
+  let cur = null;
+  text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => {
+    const h = l.match(/^=+\s*(.*?)\s*=+$/);
+    if (h) { cur = skip.test(h[1]) ? null : { tag: h[1], defs: [] }; if (cur) out.push(cur); return; }
+    // pula a linha da divisão silábica (ex.: "sau.da.de, feminino")
+    if (cur && cur.defs.length < 5 && l.toLowerCase() !== w && !/^[\p{L}]+(\.[\p{L}]+)+(,|$)/u.test(l)) cur.defs.push(l);
+  });
+  return out.filter(g => g.defs.length).slice(0, 5);
+}
+
+async function lookup(word) {
+  hidePop();
+  openModal(body => {
+    body.innerHTML = '<h2></h2><div class="dict-src">Procurando no dicionário...</div><div class="marks dict"></div>';
+    body.querySelector('h2').textContent = word;
+  });
+  const body = $('modalBody');
+  const src = body.querySelector('.dict-src'), box = body.querySelector('.dict');
+  const w = word.toLowerCase();
+  try {
+    let senses = await fromAberto(w).catch(() => []), source = 'Dicionário Aberto (Cândido de Figueiredo, 1913)';
+    if (!senses.length) { senses = await fromWiktionary(w); source = 'Wikcionário'; }
+    // verbo conjugado ("conhecia"): mostra também o significado do verbo ("conhecer")
+    let lemma = null;
+    senses.forEach(s => s.defs.forEach(x => { const m = x.match(/do verbo ([\p{L}-]+)/u); if (m) lemma = m[1]; }));
+    if (lemma && lemma !== w) {
+      const extra = await fromAberto(lemma).catch(() => []);
+      if (extra.length) {
+        extra[0] = { tag: 'Verbo ' + lemma + (extra[0].tag ? ' · ' + extra[0].tag : ''), defs: extra[0].defs };
+        senses = senses.concat(extra);
+        source += ' e Dicionário Aberto';
+      }
+    }
+    if ($('modalBody') !== body || !body.isConnected) return;
+    src.textContent = senses.length ? 'Fonte: ' + source : 'Não encontrei essa palavra no dicionário.';
+    senses.slice(0, 8).forEach(s => {
+      const d = document.createElement('div');
+      d.className = 'def';
+      if (s.tag) { const t = document.createElement('div'); t.className = 'tag'; t.textContent = s.tag; d.appendChild(t); }
+      const ol = document.createElement('ol');
+      s.defs.forEach(x => { const li = document.createElement('li'); li.textContent = x; ol.appendChild(li); });
+      d.appendChild(ol);
+      box.appendChild(d);
+    });
+  } catch (e) {
+    src.textContent = 'Sem internet: não consegui consultar o dicionário.';
+  }
+  const a = document.createElement('a');
+  a.className = 'dict-link'; a.target = '_blank'; a.rel = 'noopener';
+  a.href = 'https://pt.wiktionary.org/wiki/' + encodeURIComponent(w);
+  a.textContent = 'Ver mais no Wikcionário';
+  box.appendChild(a);
 }
 
 /* ================= TECLADO, MOUSE E ARRASTAR ================= */
@@ -1695,6 +1798,7 @@ document.querySelectorAll('#hlPop .sw').forEach(b => {
 });
 $('hlNote').onclick = startNote;
 $('hlCopy').onclick = copyText;
+$('hlDict').onclick = () => { const w = dictWord(); if (w) lookup(w); };
 $('hlDel').onclick = async () => { if (popMark) { await deleteMark(popMark); hidePop(); toast('Marcação apagada'); } };
 $('hlNoteSave').onclick = saveNote;
 $('hlNoteCancel').onclick = hidePop;
