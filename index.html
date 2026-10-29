@@ -562,6 +562,7 @@ html, body { height: 100dvh; }
   font-size: 15px; letter-spacing: .04em; color: #4a3520;
 }
 .edge { width: 6%; }
+.book { touch-action: none; }
 </style>
 </head>
 <body data-view="shelf">
@@ -1112,7 +1113,8 @@ function clearTempSel() {
 function setupTouchSelect(contents) {
   const doc = contents.document;
   const st = doc.createElement('style');
-  st.textContent = 'html, body, body * { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }' +
+  st.textContent = 'html, body { touch-action: none !important; }' +
+    'html, body, body * { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }' +
     '::highlight(leitor-sel) { background-color: rgba(196,140,50,.4); }';
   doc.head.appendChild(st);
   doc.addEventListener('contextmenu', e => e.preventDefault());
@@ -1174,10 +1176,17 @@ function moveSwipe(t, contents) {
     touch.active = true;
   }
   touch.dx = dx;
-  const el = $('viewL');
-  el.style.transform = 'translateX(' + dx + 'px)';
-  el.style.opacity = dragOpacity(dx, el.offsetWidth);
+  if (dragFrame) return;
+  dragFrame = requestAnimationFrame(() => {
+    dragFrame = 0;
+    if (!touch || !touch.active) return;
+    const el = $('viewL');
+    el.style.willChange = 'transform, opacity';
+    el.style.transform = 'translate3d(' + touch.dx + 'px,0,0)';
+    el.style.opacity = dragOpacity(touch.dx, el.offsetWidth);
+  });
 }
+let dragFrame = 0;
 function dragOpacity(dx, w) { return String(Math.max(.25, 1 - Math.abs(dx) / ((w || 300) * 1.2))); }
 function endSwipe(t, contents) {
   if (tsel && tsel.active) { touch = null; return; }
@@ -1195,6 +1204,8 @@ function endSwipe(t, contents) {
     return;
   }
   swipedAt = Date.now();
+  if (dragFrame) { cancelAnimationFrame(dragFrame); dragFrame = 0; }
+  $('viewL').style.willChange = '';
   const dir = s.dx < 0 ? 1 : -1;
   if (Math.abs(s.dx) > 60 && canTurn(dir)) turn(dir, s.dx);
   else springBack(s.dx);
