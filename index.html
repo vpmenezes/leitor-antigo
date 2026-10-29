@@ -408,6 +408,9 @@ html[data-flip="next"]::view-transition-old(pg) { z-index: 1; }
   padding: 8px 12px 10px; color: var(--ink-soft); cursor: pointer;
 }
 .toc .tabs button.on { color: var(--ink); border-bottom-color: #7a5530; }
+.toc .tabs .close { margin-left: auto; font-family: inherit; font-size: 34px; line-height: 1; padding: 0 10px 6px; }
+.toc-back { position: fixed; inset: 0; z-index: 29; background: rgba(8,4,2,.45); display: none; }
+.toc-back.on { display: block; }
 .toc ol { list-style: none; margin: 0; padding: 10px 0 30px; overflow-y: auto; }
 .toc li a {
   display: block; padding: 7px 26px; color: var(--ink); text-decoration: none;
@@ -610,10 +613,12 @@ html, body { height: 100dvh; }
   </div>
 </div>
 
+<div class="toc-back" id="tocBack"></div>
 <aside class="toc" id="toc">
   <div class="tabs">
     <button id="tabToc" class="on">Sumário</button>
     <button id="tabMarks">Marcações</button>
+    <button class="close" id="tocClose" title="Voltar ao livro">&times;</button>
   </div>
   <ol id="tocList"></ol>
   <div class="marks-list" id="marksList" hidden></div>
@@ -1047,6 +1052,7 @@ function makeRendition(id) {
   r.on('mousedown', () => { mouseDown = true; pendingSel = null; hidePop(); toggleToc(false); });
   r.on('mouseup', () => { mouseDown = false; if (pendingSel) showSelectionPop(); });
   r.on('touchstart', e => startSwipe(e.changedTouches[0]));
+  r.on('touchmove', (e, contents) => moveSwipe(e.changedTouches[0], contents));
   r.on('touchend', (e, contents) => endSwipe(e.changedTouches[0], contents));
   r.on('click', onTap);
   return r;
@@ -1058,17 +1064,49 @@ function hasSelection(contents) {
   try { const s = contents.window.getSelection(); return !!s && !s.isCollapsed; } catch (e) { return false; }
 }
 function startSwipe(t) {
-  if (t) touch = { x: t.screenX, y: t.screenY, at: Date.now() };
+  if (t && !flipping) touch = { x: t.screenX, y: t.screenY, at: Date.now(), dx: 0, active: false };
 }
-function endSwipe(t, contents) {
-  if (!touch || !t) return;
-  const dx = t.screenX - touch.x, dy = t.screenY - touch.y, dt = Date.now() - touch.at;
-  touch = null;
-  if (contents && hasSelection(contents)) return;
-  if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5 && dt < 800) {
-    swipedAt = Date.now();
-    turn(dx < 0 ? 1 : -1);
+// o texto acompanha o dedo enquanto ele desliza
+function moveSwipe(t, contents) {
+  if (!touch || !t || flipping) return;
+  const dx = t.screenX - touch.x, dy = t.screenY - touch.y;
+  if (!touch.active) {
+    if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.3 || (contents && hasSelection(contents))) return;
+    touch.active = true;
   }
+  touch.dx = dx;
+  const el = $('viewL');
+  el.style.transform = 'translateX(' + dx + 'px)';
+  el.style.opacity = dragOpacity(dx, el.offsetWidth);
+}
+function dragOpacity(dx, w) { return String(Math.max(.25, 1 - Math.abs(dx) / ((w || 300) * 1.2))); }
+function endSwipe(t, contents) {
+  if (!touch) return;
+  const s = touch;
+  touch = null;
+  if (!s.active) {
+    // deslize rápido, sem tempo de acompanhar
+    if (!t || (contents && hasSelection(contents))) return;
+    const dx = t.screenX - s.x, dy = t.screenY - s.y;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - s.at < 800) {
+      swipedAt = Date.now();
+      turn(dx < 0 ? 1 : -1);
+    }
+    return;
+  }
+  swipedAt = Date.now();
+  const dir = s.dx < 0 ? 1 : -1;
+  if (Math.abs(s.dx) > 60 && canTurn(dir)) turn(dir, s.dx);
+  else springBack(s.dx);
+}
+function springBack(dx) {
+  const el = $('viewL');
+  el.style.transform = ''; el.style.opacity = '';
+  el.animate([{ transform: 'translateX(' + dx + 'px)', opacity: dragOpacity(dx, el.offsetWidth) }, { transform: 'translateX(0)', opacity: 1 }],
+    { duration: 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
+}
+function canTurn(dir) {
+  return !!rL && !!lastLoc && !(dir > 0 && lastLoc.atEnd) && !(dir < 0 && lastLoc.atStart);
 }
 function onTap(e, contents) {
   if (Date.now() - swipedAt < 400 || hasSelection(contents)) return;
@@ -1182,6 +1220,7 @@ function buildToc(items) {
 function toggleToc(force, tab) {
   if (tab) setTab(tab);
   $('toc').classList.toggle('open', force);
+  $('tocBack').classList.toggle('on', $('toc').classList.contains('open'));
 }
 function setTab(tab) {
   $('tabToc').classList.toggle('on', tab === 'toc');
@@ -1258,64 +1297,49 @@ function go(dir) {
   return both(r => (dir > 0 ? r.next() : r.prev()));
 }
 
-async function turn(dir) {
+// o texto desliza para fora, a página muda e o texto novo entra do outro lado.
+// Usa só o próprio texto (sem "foto" da página), por isso fica leve no celular.
+// fromX: onde o dedo soltou o texto, para continuar o movimento dali
+async function turn(dir, fromX = 0) {
   if (!rL || !lastLoc) return;
   if (flipping) { queuedTurn = dir; return; }
-  if (dir > 0 && lastLoc.atEnd) { toast('Fim do livro'); return; }
-  if (dir < 0 && lastLoc.atStart) return;
+  if (!canTurn(dir)) {
+    if (dir > 0) toast('Fim do livro');
+    if (fromX) springBack(fromX);
+    return;
+  }
   flipping = true;
   hidePop();
-  let vt = null, anims = [];
+  const el = $('viewL');
+  const w = el.offsetWidth || 300;
+  let out = null, enter = null;
   try {
-    if (document.startViewTransition && !reduceMotion.matches && !document.hidden) {
-      document.documentElement.dataset.flip = dir > 0 ? 'next' : 'prev';
-      vt = document.startViewTransition();
-      try { await vt.ready; } catch (e) { vt = null; }
+    el.style.transform = ''; el.style.opacity = '';
+    if (!reduceMotion.matches) {
+      out = el.animate([
+        { transform: 'translateX(' + fromX + 'px)', opacity: fromX ? dragOpacity(fromX, w) : 1 },
+        { transform: 'translateX(' + (-dir * w * .45) + 'px)', opacity: 0 }
+      ], { duration: 150, easing: 'cubic-bezier(.4,0,1,1)', fill: 'forwards' });
+      await Promise.race([out.finished, sleep(400)]);
     }
     await Promise.race([go(dir), sleep(3000)]);
-    if (vt) {
-      await frame(); await frame();
-      anims = flipAnim(dir);
-      // o Chrome cancela a transição se a janela mudar de tamanho: não pode travar aqui
-      await Promise.race([
-        Promise.all(anims.map(a => a.finished)),
-        vt.finished,
-        sleep(FLIP_MS + 1000)
-      ]).catch(() => {});
+    if (out) {
+      await frame();
+      enter = el.animate([
+        { transform: 'translateX(' + (dir * w * .3) + 'px)', opacity: 0 },
+        { transform: 'translateX(0)', opacity: 1 }
+      ], { duration: 240, easing: 'cubic-bezier(.15,.7,.3,1)', fill: 'both' });
+      out.cancel(); out = null;
+      await Promise.race([enter.finished, sleep(600)]);
     }
   } catch (e) {
     console.error(e);
   } finally {
-    if (vt) vt.skipTransition();
-    anims.forEach(a => { try { a.cancel(); } catch (e) {} });
-    delete document.documentElement.dataset.flip;
+    [out, enter].forEach(a => { try { if (a) a.cancel(); } catch (e) {} });
+    el.style.transform = ''; el.style.opacity = '';
     flipping = false;
     if (queuedTurn) { const d = queuedTurn; queuedTurn = 0; turn(d); }
   }
-}
-
-// uma página só: para frente a folha atual levanta pela lombada (esquerda) e sai;
-// para trás a folha anterior volta por cima até deitar
-function flipAnim(dir) {
-  const de = document.documentElement;
-  const P = 'perspective(2600px) ';
-  const old = '::view-transition-old(pg)', neu = '::view-transition-new(pg)';
-  if (dir > 0) return [
-    de.animate([
-      { transform: P + 'rotateY(0deg)', filter: 'brightness(1)' },
-      { transform: P + 'rotateY(-90deg)', filter: 'brightness(.7)' }
-    ], { duration: FLIP_MS, easing: 'cubic-bezier(.4,0,.8,.5)', fill: 'forwards', pseudoElement: old }),
-    de.animate([{ filter: 'brightness(.8)' }, { filter: 'brightness(1)' }],
-      { duration: FLIP_MS, easing: 'ease-out', fill: 'both', pseudoElement: neu })
-  ];
-  return [
-    de.animate([
-      { transform: P + 'rotateY(-90deg)', filter: 'brightness(.7)' },
-      { transform: P + 'rotateY(0deg)', filter: 'brightness(1)' }
-    ], { duration: FLIP_MS, easing: 'cubic-bezier(.2,.5,.6,1)', fill: 'both', pseudoElement: neu }),
-    de.animate([{ filter: 'brightness(1)' }, { filter: 'brightness(.82)' }],
-      { duration: FLIP_MS, easing: 'ease-in', fill: 'both', pseudoElement: old })
-  ];
 }
 
 /* ================= MARCA-TEXTO ================= */
@@ -1553,6 +1577,7 @@ $('bToc').onclick = () => openDrawer('toc');
 $('bMarks').onclick = () => openDrawer('marks');
 $('tabToc').onclick = () => setTab('toc');
 $('tabMarks').onclick = () => setTab('marks');
+$('tocClose').onclick = $('tocBack').onclick = () => toggleToc(false);
 $('bAa').onclick = () => $('aaPanel').classList.toggle('on');
 document.querySelectorAll('#aaPanel [data-font]').forEach(b => { b.onclick = () => setFontKey(b.dataset.font); });
 markFontButtons();
@@ -1561,6 +1586,7 @@ document.addEventListener('pointerdown', e => {
 });
 // deslizar o dedo também nas margens do livro, fora do texto
 $('book').addEventListener('touchstart', e => startSwipe(e.changedTouches[0]), { passive: true });
+$('book').addEventListener('touchmove', e => moveSwipe(e.changedTouches[0], null), { passive: true });
 $('book').addEventListener('touchend', e => endSwipe(e.changedTouches[0], null), { passive: true });
 $('bSmaller').onclick = () => setFont(-.1);
 $('bBigger').onclick = () => setFont(.1);
