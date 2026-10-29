@@ -164,8 +164,7 @@ body[data-view="shelf"] .reader { opacity: 0; visibility: hidden; pointer-events
   background: rgba(8,4,2,.68);
   display: none; align-items: center; justify-content: center;
 }
-.modal-back.on { display: flex; animation: fade-in .2s ease-out; }
-.modal-back.on .card { animation: card-in .28s cubic-bezier(.2,.8,.3,1); }
+.modal-back.on { display: flex; animation: fade-in .15s ease-out; }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes card-in { from { opacity: 0; transform: translateY(14px) scale(.98); } }
 @keyframes pop-in { from { opacity: 0; scale: .94; } }
@@ -391,7 +390,7 @@ body[data-view="shelf"] .reader { opacity: 0; visibility: hidden; pointer-events
   position: fixed; top: 0; bottom: 0; left: 0; width: min(420px, 88vw);
   background: var(--noise), linear-gradient(90deg, var(--paper-light), var(--paper));
   box-shadow: 6px 0 30px rgba(0,0,0,.6);
-  transform: translateX(-105%); transition: transform .38s cubic-bezier(.22,.8,.3,1);
+  transform: translateX(-105%); transition: transform .25s ease-out;
   z-index: 30; display: flex; flex-direction: column;
 }
 .toc.open { transform: none; }
@@ -425,7 +424,7 @@ body[data-view="shelf"] .reader { opacity: 0; visibility: hidden; pointer-events
   background: rgba(28,16,8,.97); border: 1px solid #6a4526; border-radius: 22px;
   padding: 6px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
 }
-.hl-pop.on { display: flex; animation: pop-in .16s ease-out; }
+.hl-pop.on { display: flex; }
 .hl-pop.below { transform: translate(-50%, 12px); }
 .hl-pop.noting { border-radius: 12px; }
 .hl-pop .r1 { display: flex; align-items: center; gap: 5px; }
@@ -526,7 +525,7 @@ html, body { height: 100dvh; }
   background: rgba(28,16,8,.97); border: 1px solid #6a4526; border-radius: 12px; padding: 12px;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
 }
-.aa.on { display: block; animation: pop-in .16s ease-out; transform-origin: top right; }
+.aa.on { display: block; }
 .aa .lbl { color: #b89a6c; font-size: 14px; margin: 0 2px 6px; }
 .aa .rowb { display: flex; gap: 6px; margin-bottom: 12px; }
 .aa .rowb:last-child { margin-bottom: 0; }
@@ -562,6 +561,8 @@ html, body { height: 100dvh; }
 }
 .edge { width: 6%; }
 .book { touch-action: none; }
+/* troca estante/livro na hora, sem fade (o livro já está montando por trás) */
+.shelf-view, .reader { transition: none; }
 </style>
 </head>
 <body data-view="shelf">
@@ -604,7 +605,6 @@ html, body { height: 100dvh; }
       <button id="bSmaller">A-</button>
       <button id="bBigger">A+</button>
     </div>
-    <div class="rowb"><button id="bFull">Tela cheia</button></div>
   </div>
 
   <div class="book" id="book">
@@ -1279,55 +1279,19 @@ function setupTouchSelect(contents) {
   }, { passive: true });
 }
 
-// o texto acompanha o dedo enquanto ele desliza
-function moveSwipe(t, contents) {
-  if (tsel && tsel.active) return;
-  if (!touch || !t || flipping) return;
-  const dx = t.screenX - touch.x, dy = t.screenY - touch.y;
-  if (!touch.active) {
-    if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.3 || (contents && hasSelection(contents))) return;
-    touch.active = true;
-  }
-  touch.dx = dx;
-  if (dragFrame) return;
-  dragFrame = requestAnimationFrame(() => {
-    dragFrame = 0;
-    if (!touch || !touch.active) return;
-    const el = $('viewL');
-    el.style.willChange = 'transform, opacity';
-    el.style.transform = 'translate3d(' + touch.dx + 'px,0,0)';
-    el.style.opacity = dragOpacity(touch.dx, el.offsetWidth);
-  });
-}
-let dragFrame = 0;
-function dragOpacity(dx, w) { return String(Math.max(.25, 1 - Math.abs(dx) / ((w || 300) * 1.2))); }
+// deslizar o dedo para o lado vira a página (o texto não segue o dedo: fica mais leve)
+function moveSwipe() {}
 function endSwipe(t, contents) {
   if (tsel && tsel.active) { touch = null; return; }
-  if (!touch) return;
+  if (!touch || !t) { touch = null; return; }
   const s = touch;
   touch = null;
-  if (!s.active) {
-    // deslize rápido, sem tempo de acompanhar
-    if (!t || (contents && hasSelection(contents))) return;
-    const dx = t.screenX - s.x, dy = t.screenY - s.y;
-    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5 && Date.now() - s.at < 800) {
-      swipedAt = Date.now();
-      turn(dx < 0 ? 1 : -1);
-    }
-    return;
+  if (contents && hasSelection(contents)) return;
+  const dx = t.screenX - s.x, dy = t.screenY - s.y;
+  if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4 && Date.now() - s.at < 900) {
+    swipedAt = Date.now();
+    turn(dx < 0 ? 1 : -1);
   }
-  swipedAt = Date.now();
-  if (dragFrame) { cancelAnimationFrame(dragFrame); dragFrame = 0; }
-  $('viewL').style.willChange = '';
-  const dir = s.dx < 0 ? 1 : -1;
-  if (Math.abs(s.dx) > 60 && canTurn(dir)) turn(dir, s.dx);
-  else springBack(s.dx);
-}
-function springBack(dx) {
-  const el = $('viewL');
-  el.style.transform = ''; el.style.opacity = '';
-  el.animate([{ transform: 'translateX(' + dx + 'px)', opacity: dragOpacity(dx, el.offsetWidth) }, { transform: 'translateX(0)', opacity: 1 }],
-    { duration: 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
 }
 function canTurn(dir) {
   return !!rL && !!lastLoc && !(dir > 0 && lastLoc.atEnd) && !(dir < 0 && lastLoc.atStart);
@@ -1403,9 +1367,6 @@ async function openBuffer(buf, rec, target) {
   $('loading').classList.add('on');
   await displayBoth(target || rec.cfi || load('pos:' + rec.id) || undefined);
   $('loading').classList.remove('on');
-  requestAnimationFrame(() => renditions().forEach((r, i) => {
-    if (!reduceMotion.matches) $(i ? 'viewR' : 'viewL').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
-  }));
   $('viewL').classList.remove('hidden');
 
   if (!load('markedOnce')) setTimeout(() => {
@@ -1534,46 +1495,19 @@ function go(dir) {
   return both(r => (dir > 0 ? r.next() : r.prev()));
 }
 
-// o texto desliza para fora, a página muda e o texto novo entra do outro lado.
-// Usa só o próprio texto (sem "foto" da página), por isso fica leve no celular.
-// fromX: onde o dedo soltou o texto, para continuar o movimento dali
-async function turn(dir, fromX = 0) {
+// virada simples: a página troca na hora e o texto novo aparece com um fade curto
+async function turn(dir) {
   if (!rL || !lastLoc) return;
   if (flipping) { queuedTurn = dir; return; }
-  if (!canTurn(dir)) {
-    if (dir > 0) toast('Fim do livro');
-    if (fromX) springBack(fromX);
-    return;
-  }
+  if (!canTurn(dir)) { if (dir > 0) toast('Fim do livro'); return; }
   flipping = true;
   hidePop();
-  const el = $('viewL');
-  const w = el.offsetWidth || 300;
-  let out = null, enter = null;
   try {
-    el.style.transform = ''; el.style.opacity = '';
-    if (!reduceMotion.matches) {
-      out = el.animate([
-        { transform: 'translateX(' + fromX + 'px)', opacity: fromX ? dragOpacity(fromX, w) : 1 },
-        { transform: 'translateX(' + (-dir * w * .45) + 'px)', opacity: 0 }
-      ], { duration: 150, easing: 'cubic-bezier(.4,0,1,1)', fill: 'forwards' });
-      await Promise.race([out.finished, sleep(400)]);
-    }
     await Promise.race([go(dir), sleep(3000)]);
-    if (out) {
-      await frame();
-      enter = el.animate([
-        { transform: 'translateX(' + (dir * w * .3) + 'px)', opacity: 0 },
-        { transform: 'translateX(0)', opacity: 1 }
-      ], { duration: 240, easing: 'cubic-bezier(.15,.7,.3,1)', fill: 'both' });
-      out.cancel(); out = null;
-      await Promise.race([enter.finished, sleep(600)]);
-    }
+    if (!reduceMotion.matches) $('viewL').animate([{ opacity: .3 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
   } catch (e) {
     console.error(e);
   } finally {
-    [out, enter].forEach(a => { try { if (a) a.cancel(); } catch (e) {} });
-    el.style.transform = ''; el.style.opacity = '';
     flipping = false;
     if (queuedTurn) { const d = queuedTurn; queuedTurn = 0; turn(d); }
   }
@@ -1875,7 +1809,6 @@ function onKey(e) {
     case 's': case 'S': openDrawer('toc'); break;
     case 'm': case 'M': openDrawer('marks'); break;
     case 'e': case 'E': goShelf(); break;
-    case 'f': case 'F': fullscreen(); break;
     case '+': case '=': setFont(.1); break;
     case '-': setFont(-.1); break;
   }
@@ -1909,10 +1842,6 @@ function setFontKey(k) {
   }));
   relayout();
   toast('Fonte: ' + FONTS[fontKey].name);
-}
-function fullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen().catch(() => {});
 }
 
 document.addEventListener('keyup', onKey);
@@ -1948,7 +1877,6 @@ $('book').addEventListener('touchmove', e => moveSwipe(e.changedTouches[0], null
 $('book').addEventListener('touchend', e => endSwipe(e.changedTouches[0], null), { passive: true });
 $('bSmaller').onclick = () => setFont(-.1);
 $('bBigger').onclick = () => setFont(.1);
-$('bFull').onclick = fullscreen;
 $('sAdd').onclick = () => $('file').click();
 $('sMarks').onclick = openAllMarks;
 $('sBackup').onclick = openBackup;
