@@ -232,6 +232,15 @@ body[data-view="shelf"] .reader { opacity: 0; visibility: hidden; pointer-events
   -webkit-user-select: text; user-select: text;
 }
 .note-act { justify-content: flex-end; margin-top: 14px; }
+/* balão compacto no celular, para caber numa linha só */
+#hlPop { padding: 6px; }
+#hlPop .r1 { gap: 4px; }
+#hlPop .sw { width: 25px; height: 25px; }
+#hlPop .sep { margin: 2px 2px; }
+#hlPop .tb { padding: 4px 6px; }
+.note-colors { display: flex; gap: 12px; margin: 0 0 12px; }
+.note-colors .sw { width: 32px; height: 32px; border-radius: 50%; padding: 0; border: 2px solid rgba(60,40,20,.25); }
+.note-colors .sw.cur { border-color: #3a2414; box-shadow: inset 0 0 0 2px var(--paper-light); }
 .bk-txt { font-size: 17px; line-height: 1.5; margin: 10px 0; }
 .bk-info { color: var(--ink-soft); font-style: italic; font-size: 16px; margin-top: 8px; }
 .empty-marks { font-style: italic; color: var(--ink-soft); padding: 12px 0; font-size: 17px; }
@@ -700,7 +709,7 @@ const THEME = {
   },
   'a': { 'color': '#6b3a12 !important' },
   'img, svg': { 'max-width': '100% !important', 'mix-blend-mode': 'multiply' },
-  '::selection': { 'background': 'rgba(150,100,40,.3)' }
+  '::selection': { 'background': 'rgba(45,65,95,.2)' }
 };
 const $ = id => document.getElementById(id);
 const cfiTool = new ePub.CFI();
@@ -1228,7 +1237,7 @@ function setupTouchSelect(contents) {
   const st = doc.createElement('style');
   st.textContent = 'html, body { touch-action: none !important; }' +
     'html, body, body * { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }' +
-    '::highlight(leitor-sel) { background-color: rgba(196,140,50,.4); }';
+    '::highlight(leitor-sel) { background-color: rgba(45,65,95,.16); text-decoration: underline; text-decoration-color: rgba(45,65,95,.7); text-decoration-thickness: 2px; }';
   doc.head.appendChild(st);
   doc.addEventListener('contextmenu', e => e.preventDefault());
   doc.addEventListener('touchstart', e => {
@@ -1574,9 +1583,20 @@ function placePop(r, iframe, isEdit) {
   // então o balão vai embaixo, a não ser que não caiba
   const below = bottom + 80 < innerHeight;
   pop.classList.toggle('below', below);
+  pop.dataset.x = x;
   pop.style.top = (below ? bottom : top) + 'px';
   pop.classList.add('on');
-  const half = pop.offsetWidth / 2 + 8;
+  fitPop();
+}
+
+function fitPop() {
+  // mede o balão com a largura toda livre e só depois posiciona (perto da borda ele não espreme)
+  const pop = $('hlPop');
+  const x = Number(pop.dataset.x) || innerWidth / 2;
+  pop.style.width = ''; pop.style.left = '0px';
+  const w = Math.min(Math.ceil(pop.getBoundingClientRect().width) + 1, innerWidth - 16);
+  pop.style.width = w + 'px';
+  const half = w / 2 + 8;
   pop.style.left = Math.max(half, Math.min(innerWidth - half, x)) + 'px';
 }
 
@@ -1629,28 +1649,47 @@ async function deleteMark(m) {
   }
 }
 
+// a nota só vira marcação quando você salva, na cor escolhida (cancelar não marca nada)
 async function startNote() {
-  if (!popMark) popMark = await createMark('amarelo');
-  const m = popMark;
-  if (!m) return;
+  const existing = popMark, sel = pendingSel;
+  if (!existing && !sel) return;
+  let color = existing ? existing.color : 'amarelo';
   hidePop();
   openModal(body => {
-    body.innerHTML = '<h2>Nota</h2><div class="note-quote"></div>' +
+    body.innerHTML = '<h2>Nota</h2><div class="note-quote"></div><div class="note-colors"></div>' +
       '<textarea class="note-area" placeholder="Escreva sua nota..."></textarea><div class="ficha-actions note-act"></div>';
-    body.querySelector('.note-quote').textContent = '“' + m.text + '”';
+    body.querySelector('.note-quote').textContent = '“' + (existing ? existing.text : sel.text) + '”';
+    const colors = body.querySelector('.note-colors');
+    Object.keys(COLORS).forEach(c => {
+      const b = document.createElement('button');
+      b.className = 'sw' + (c === color ? ' cur' : '');
+      b.style.background = COLORS[c];
+      b.title = c;
+      b.onclick = () => { color = c; colors.querySelectorAll('.sw').forEach(x => x.classList.toggle('cur', x === b)); };
+      colors.appendChild(b);
+    });
     const ta = body.querySelector('textarea');
-    ta.value = m.note || '';
+    ta.value = existing ? (existing.note || '') : '';
     const act = body.querySelector('.note-act');
     const cancel = document.createElement('button');
     cancel.className = 'btn ghost'; cancel.textContent = 'Cancelar'; cancel.onclick = closeModals;
     const ok = document.createElement('button');
     ok.className = 'btn'; ok.textContent = 'Salvar nota';
     ok.onclick = async () => {
-      m.note = ta.value.trim();
-      await dbPut('marks', m);
+      const text = ta.value.trim();
+      if (existing) {
+        existing.note = text;
+        if (existing.color !== color) { existing.color = color; unapplyMark(existing); applyMark(existing); }
+        await dbPut('marks', existing);
+      } else {
+        if (!text) { closeModals(); return; }
+        pendingSel = sel;
+        const m = await createMark(color);
+        if (m) { m.note = text; await dbPut('marks', m); }
+      }
       renderReaderMarks();
       closeModals();
-      toast(m.note ? 'Nota salva' : 'Nota apagada');
+      toast(text ? 'Nota salva' : 'Nota apagada');
     };
     act.append(cancel, ok);
   });
