@@ -15,7 +15,7 @@
     "enctype": "multipart/form-data",
     "params": {
       "files": [
-        { "name": "livro", "accept": ["application/epub+zip", "application/octet-stream", ".epub"] }
+        { "name": "livro", "accept": ["application/epub+zip", "application/octet-stream", ".epub", "application/json", ".json"] }
       ]
     }
   },

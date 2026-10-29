@@ -221,6 +221,8 @@ body[data-view="shelf"] .reader { opacity: 0; visibility: hidden; pointer-events
   font-size: 22px; color: var(--ink-soft); cursor: pointer; opacity: .45;
 }
 .mk .del:hover { opacity: 1; color: #8a2a1a; }
+.bk-txt { font-size: 17px; line-height: 1.5; margin: 10px 0; }
+.bk-info { color: var(--ink-soft); font-style: italic; font-size: 16px; margin-top: 8px; }
 .empty-marks { font-style: italic; color: var(--ink-soft); padding: 12px 0; font-size: 17px; }
 
 /* ================= LEITURA ================= */
@@ -563,6 +565,7 @@ html, body { height: 100dvh; }
       <button class="btn" id="sResume" hidden></button>
       <button class="btn" id="sAdd">Adicionar livro</button>
       <button class="btn dark-ghost" id="sMarks">Todas as marcações</button>
+      <button class="btn dark-ghost" id="sBackup">Backup</button>
     </div>
   </header>
   <div class="case" id="bookcase"></div>
@@ -653,6 +656,7 @@ html, body { height: 100dvh; }
 
 <div class="drop" id="drop">Solte os livros aqui</div>
 <div class="toast" id="toast"></div>
+<input type="file" id="backupFile" hidden>
 <input type="file" id="file" multiple hidden>
 
 <script>
@@ -865,6 +869,8 @@ async function renderShelf() {
   $('shelfSub').textContent = lib.length
     ? plural(lib.length, 'livro', 'livros') + ' · ' + plural(all.length, 'marcação', 'marcações')
     : 'Sua estante está vazia. Toque em Adicionar livro, ou compartilhe um EPUB do WhatsApp para o app Leitor.';
+  const lastBk = Number(load('lastBackup')) || 0;
+  if (all.length >= 5 && Date.now() - lastBk > 30 * 864e5) $('shelfSub').textContent += ' · hora de fazer um backup';
   const resume = lib.find(r => r.lastRead);
   $('sResume').hidden = !resume;
   if (resume) {
@@ -997,6 +1003,112 @@ async function removeBook(rec) {
   closeModals();
   await renderShelf();
   toast('Livro removido da estante');
+}
+
+/* ---------- backup das marcações ----------
+   Guarda marcações, notas e a posição de leitura num arquivo .json.
+   Os livros (EPUB) não vão no backup. Como cada livro é reconhecido pelo próprio
+   arquivo, o backup do PC também serve no celular e vice-versa. */
+async function backupFile() {
+  const [lib, all] = await Promise.all([dbAll('library'), dbAll('marks')]);
+  const data = {
+    app: 'leitor-antigo', versao: 1, criado: new Date().toISOString(),
+    livros: lib.map(r => ({ id: r.id, title: r.title, author: r.author, cfi: r.cfi || null, progress: r.progress || 0, lastRead: r.lastRead || 0 })),
+    marcacoes: all
+  };
+  const name = 'leitor-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+  return new File([JSON.stringify(data, null, 1)], name, { type: 'application/json' });
+}
+
+async function saveBackup() {
+  const f = await backupFile();
+  const url = URL.createObjectURL(f);
+  const a = document.createElement('a');
+  a.href = url; a.download = f.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  save('lastBackup', Date.now());
+  closeModals();
+  renderShelf();
+  toast('Backup salvo: ' + f.name, 4000);
+}
+
+async function shareBackup() {
+  const f = await backupFile();
+  try {
+    await navigator.share({ files: [f], title: 'Backup do Leitor Antigo' });
+    save('lastBackup', Date.now());
+    closeModals();
+    renderShelf();
+    toast('Backup enviado');
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('Não consegui enviar o backup');
+  }
+}
+
+// junta o backup com o que já existe: nunca apaga nada
+async function restoreBackup(file) {
+  let data = null;
+  try { data = JSON.parse(await file.text()); } catch (e) {}
+  if (!data || data.app !== 'leitor-antigo' || !Array.isArray(data.marcacoes)) {
+    toast('Esse arquivo não é um backup do leitor', 4000);
+    return;
+  }
+  const [lib, all] = await Promise.all([dbAll('library'), dbAll('marks')]);
+  const onShelf = Object.fromEntries(lib.map(r => [r.id, r]));
+  const have = new Set(all.map(m => m.bookId + '|' + m.cfi));
+  let added = 0;
+  for (const m of data.marcacoes) {
+    if (!m || !m.id || !m.bookId || !m.cfi || have.has(m.bookId + '|' + m.cfi)) continue;
+    await dbPut('marks', m);
+    have.add(m.bookId + '|' + m.cfi);
+    added++;
+  }
+  const missing = [];
+  for (const b of data.livros || []) {
+    const rec = onShelf[b.id];
+    if (rec) {
+      // só avança a posição se o backup for de uma leitura mais recente
+      if (b.cfi && (b.lastRead || 0) > (rec.lastRead || 0)) {
+        Object.assign(rec, { cfi: b.cfi, progress: b.progress || 0, lastRead: b.lastRead });
+        await dbPut('library', rec);
+      }
+    } else {
+      // livro ainda não está na estante: a posição fica guardada para quando ele for adicionado
+      if (b.cfi) save('pos:' + b.id, b.cfi);
+      if (data.marcacoes.some(m => m && m.bookId === b.id)) missing.push(b.title || 'um livro');
+    }
+  }
+  closeModals();
+  await renderShelf();
+  let msg = plural(added, 'marcação restaurada', 'marcações restauradas');
+  if (!added) msg = 'Tudo deste backup já estava na estante';
+  if (missing.length) msg += '. Para ver as marcações de ' + missing.slice(0, 2).join(', ') + (missing.length > 2 ? ' e outros' : '') + ', adicione esse livro à estante';
+  toast(msg, 8000);
+}
+
+async function openBackup() {
+  const all = await dbAll('marks');
+  const last = Number(load('lastBackup')) || 0;
+  let canShare = false;
+  try { canShare = !!(navigator.canShare && navigator.canShare({ files: [new File(['{}'], 'b.json', { type: 'application/json' })] })); } catch (e) {}
+  openModal(body => {
+    body.innerHTML = '<h2>Backup das marcações</h2>' +
+      '<p class="bk-txt">Guarda num arquivo as suas marcações, as notas e a página onde você parou em cada livro.</p>' +
+      '<p class="bk-txt">Os livros em si não vão no backup. Se um dia precisar, adicione os arquivos EPUB de novo e as marcações voltam para eles. O backup também serve para levar as marcações do PC para o celular e vice-versa.</p>' +
+      '<div class="bk-info"></div><div class="ficha-actions bk-act"></div>';
+    body.querySelector('.bk-info').textContent = plural(all.length, 'marcação', 'marcações') + ' · ' +
+      (last ? 'último backup em ' + fmtDate(last) : 'nenhum backup feito ainda');
+    const act = body.querySelector('.bk-act');
+    const add = (label, cls, fn) => {
+      const b = document.createElement('button');
+      b.className = cls; b.textContent = label; b.onclick = fn;
+      act.appendChild(b);
+    };
+    add('Salvar backup', 'btn', saveBackup);
+    if (canShare) add('Enviar backup', 'btn', shareBackup);
+    add('Restaurar backup', 'btn ghost', () => $('backupFile').click());
+  });
 }
 
 function showView(v) {
@@ -1801,6 +1913,8 @@ $('bBigger').onclick = () => setFont(.1);
 $('bFull').onclick = fullscreen;
 $('sAdd').onclick = () => $('file').click();
 $('sMarks').onclick = openAllMarks;
+$('sBackup').onclick = openBackup;
+$('backupFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); };
 $('file').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
 $('modalX').onclick = closeModals;
 $('modal').onclick = e => { if (e.target === $('modal')) closeModals(); };
@@ -1859,7 +1973,10 @@ async function takeShared() {
       files.push(new File([await res.blob()], name, { type: res.headers.get('Content-Type') || '' }));
       await cache.delete(req);
     }
-    if (files.length) await addFiles(files);
+    const backups = files.filter(f => /\.json$/i.test(f.name) || f.type === 'application/json');
+    for (const b of backups) await restoreBackup(b);
+    const books = files.filter(f => !backups.includes(f));
+    if (books.length) await addFiles(books);
   } catch (e) { console.error(e); toast('Não consegui receber o livro'); }
 }
 
