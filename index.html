@@ -779,7 +779,7 @@ async function addToLibrary(buf) {
 }
 
 async function addFiles(list) {
-  const files = [...list].filter(f => /\.epub$/i.test(f.name));
+  const files = [...list].filter(f => /\.epub$/i.test(f.name) || f.type === 'application/epub+zip');
   if (!files.length) { toast('Esse arquivo não é um EPUB'); return; }
   toast(files.length > 1 ? 'Guardando ' + files.length + ' livros na estante...' : 'Guardando o livro na estante...');
   let last = null, ok = 0;
@@ -1606,7 +1606,25 @@ window.addEventListener('beforeunload', flushSave);
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   await migrateLegacy();
   await renderShelf();
+  await takeShared();
 })();
+
+// livros que chegaram pelo "Compartilhar" (o service worker guardou num cache)
+async function takeShared() {
+  if (!location.search.includes('compartilhado') || !('caches' in window)) return;
+  history.replaceState(null, '', location.pathname);
+  try {
+    const cache = await caches.open('leitor-compartilhados');
+    const files = [];
+    for (const req of await cache.keys()) {
+      const res = await cache.match(req);
+      const name = decodeURIComponent(res.headers.get('X-Nome') || 'livro.epub');
+      files.push(new File([await res.blob()], name, { type: res.headers.get('Content-Type') || '' }));
+      await cache.delete(req);
+    }
+    if (files.length) await addFiles(files);
+  } catch (e) { console.error(e); toast('Não consegui receber o livro'); }
+}
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
