@@ -1049,11 +1049,15 @@ function makeRendition(id) {
     st.id = 'leitor-font'; st.textContent = fontCss();
     doc.head.appendChild(st);
     contents.window.addEventListener('wheel', onWheel, { passive: true });
+    setupTouchSelect(contents);
   });
   r.on('keyup', onKey);
   r.on('selected', onSelected);
   r.on('markClicked', onMarkClicked);
-  r.on('mousedown', () => { mouseDown = true; pendingSel = null; hidePop(); toggleToc(false); });
+  r.on('mousedown', () => {
+    if (Date.now() - swipedAt < 500) return;
+    mouseDown = true; pendingSel = null; hidePop(); toggleToc(false);
+  });
   r.on('mouseup', () => { mouseDown = false; if (pendingSel) showSelectionPop(); });
   r.on('touchstart', e => startSwipe(e.changedTouches[0]));
   r.on('touchmove', (e, contents) => moveSwipe(e.changedTouches[0], contents));
@@ -1070,8 +1074,90 @@ function hasSelection(contents) {
 function startSwipe(t) {
   if (t && !flipping) touch = { x: t.screenX, y: t.screenY, at: Date.now(), dx: 0, active: false };
 }
+/* ---------- seleção própria para marcar ----------
+   A seleção do navegador fica desligada dentro do livro (assim não aparece o menu
+   do Google). Segurar o dedo numa palavra começa a seleção; arrastar estende. */
+let tsel = null;
+function wordAt(doc, x, y) {
+  const c = doc.caretRangeFromPoint && doc.caretRangeFromPoint(x, y);
+  if (!c || c.startContainer.nodeType !== 3) return null;
+  const node = c.startContainer, txt = node.data;
+  const isW = ch => /[\p{L}\p{N}'’-]/u.test(ch || '');
+  let s = c.startOffset, e = s;
+  while (s > 0 && isW(txt[s - 1])) s--;
+  while (e < txt.length && isW(txt[e])) e++;
+  if (s === e) return null;
+  const r = doc.createRange();
+  r.setStart(node, s); r.setEnd(node, e);
+  return r;
+}
+function paintSel(contents, range) {
+  const W = contents.window;
+  try { W.CSS.highlights.set('leitor-sel', new W.Highlight(range)); } catch (e) {}
+}
+function clearTempSel() {
+  renditions().forEach(r => r.getContents().forEach(c => {
+    try { c.window.CSS.highlights.delete('leitor-sel'); } catch (e) {}
+  }));
+}
+function setupTouchSelect(contents) {
+  const doc = contents.document;
+  const st = doc.createElement('style');
+  st.textContent = 'html, body, body * { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }' +
+    '::highlight(leitor-sel) { background-color: rgba(196,140,50,.4); }';
+  doc.head.appendChild(st);
+  doc.addEventListener('contextmenu', e => e.preventDefault());
+  doc.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) { tsel = null; return; }
+    const t = e.touches[0];
+    const s = { contents, x: t.clientX, y: t.clientY, active: false };
+    s.timer = setTimeout(() => {
+      const w = wordAt(doc, s.x, s.y);
+      if (!w || tsel !== s) return;
+      hidePop();
+      s.active = true; s.anchor = w; s.range = w;
+      paintSel(contents, w);
+      try { navigator.vibrate && navigator.vibrate(12); } catch (err) {}
+    }, 420);
+    tsel = s;
+  }, { passive: true });
+  doc.addEventListener('touchmove', e => {
+    const s = tsel;
+    if (!s || s.contents !== contents) return;
+    const t = e.touches[0];
+    if (!s.active) {
+      if (Math.hypot(t.clientX - s.x, t.clientY - s.y) > 10) { clearTimeout(s.timer); tsel = null; }
+      return;
+    }
+    const w = wordAt(doc, t.clientX, t.clientY);
+    if (!w) return;
+    const r = doc.createRange();
+    if (w.compareBoundaryPoints(Range.START_TO_START, s.anchor) < 0) {
+      r.setStart(w.startContainer, w.startOffset); r.setEnd(s.anchor.endContainer, s.anchor.endOffset);
+    } else {
+      r.setStart(s.anchor.startContainer, s.anchor.startOffset); r.setEnd(w.endContainer, w.endOffset);
+    }
+    s.range = r;
+    paintSel(contents, r);
+  }, { passive: true });
+  doc.addEventListener('touchend', () => {
+    const s = tsel;
+    if (!s || s.contents !== contents) return;
+    clearTimeout(s.timer);
+    tsel = null;
+    if (!s.active) return;
+    swipedAt = Date.now();
+    const text = s.range.toString().replace(/\s+/g, ' ').trim();
+    if (!text) { clearTempSel(); return; }
+    pendingSel = { cfi: contents.cfiFromRange(s.range), text, contents };
+    popMark = marks.find(m => m.cfi === pendingSel.cfi) || null;
+    placePop(firstRect(s.range), contents.window.frameElement, !!popMark);
+  }, { passive: true });
+}
+
 // o texto acompanha o dedo enquanto ele desliza
 function moveSwipe(t, contents) {
+  if (tsel && tsel.active) return;
   if (!touch || !t || flipping) return;
   const dx = t.screenX - touch.x, dy = t.screenY - touch.y;
   if (!touch.active) {
@@ -1085,6 +1171,7 @@ function moveSwipe(t, contents) {
 }
 function dragOpacity(dx, w) { return String(Math.max(.25, 1 - Math.abs(dx) / ((w || 300) * 1.2))); }
 function endSwipe(t, contents) {
+  if (tsel && tsel.active) { touch = null; return; }
   if (!touch) return;
   const s = touch;
   touch = null;
@@ -1183,7 +1270,7 @@ async function openBuffer(buf, rec, target) {
   $('viewL').classList.remove('hidden');
 
   if (!load('markedOnce')) setTimeout(() => {
-    if (view === 'reader') toast('Dica: deslize o dedo para virar. Para marcar, segure o dedo no texto, ajuste a seleção e escolha uma cor', 8000);
+    if (view === 'reader') toast('Dica: deslize o dedo para virar. Para marcar, segure o dedo numa palavra, arraste até o fim do trecho e escolha uma cor', 8000);
   }, 1200);
 
   const opened = book;
@@ -1416,6 +1503,7 @@ function placePop(r, iframe, isEdit) {
 function hidePop() {
   $('hlPop').classList.remove('on', 'noting');
   popMark = null;
+  clearTempSel();
 }
 
 async function createMark(color) {
