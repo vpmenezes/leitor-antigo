@@ -1,6 +1,6 @@
 // Guarda o app no celular para abrir mesmo sem internet.
 // Ao publicar uma versão nova, troque o número em VERSION.
-const VERSION = 'leitor-v4';
+const VERSION = 'leitor-v5';
 const SHARED = 'leitor-compartilhados';
 const APP = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './lib/epub.min.js', './lib/jszip.min.js'];
 
