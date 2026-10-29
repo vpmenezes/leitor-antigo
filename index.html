@@ -1495,7 +1495,7 @@ function go(dir) {
   return both(r => (dir > 0 ? r.next() : r.prev()));
 }
 
-// virada simples: a página troca na hora e o texto novo aparece com um fade curto
+// virada simples: a página troca na hora, sem efeito (fica estável, sem piscar)
 async function turn(dir) {
   if (!rL || !lastLoc) return;
   if (flipping) { queuedTurn = dir; return; }
@@ -1504,7 +1504,6 @@ async function turn(dir) {
   hidePop();
   try {
     await Promise.race([go(dir), sleep(3000)]);
-    if (!reduceMotion.matches) $('viewL').animate([{ opacity: .3 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
   } catch (e) {
     console.error(e);
   } finally {
